@@ -6,6 +6,8 @@ export function ProductProvider({ children }) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [photos, setPhotos] = useState([])
+  const [barcode, setBarcode] = useState(null)
+  const [qrCode, setQrCode] = useState(null)
 
   function addPhotos(newPhotos) {
     setPhotos(prev => [...prev, ...newPhotos])
@@ -19,10 +21,12 @@ export function ProductProvider({ children }) {
     setName('')
     setDescription('')
     setPhotos([])
+    setBarcode(null)
+    setQrCode(null)
   }
 
   return (
-    <ProductContext.Provider value={{ name, setName, description, setDescription, photos, addPhotos, removePhoto, clearAll }}>
+    <ProductContext.Provider value={{ name, setName, description, setDescription, photos, addPhotos, removePhoto, clearAll, barcode, setBarcode, qrCode, setQrCode }}>
       {children}
     </ProductContext.Provider>
   )

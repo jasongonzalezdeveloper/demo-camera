@@ -70,7 +70,7 @@ function sharpnessInfo(score) {
 
 export default function Result() {
   const navigate = useNavigate()
-  const { name, description, photos, clearAll } = useProduct()
+  const { name, description, photos, clearAll, barcode, qrCode } = useProduct()
   const [photoMetrics, setPhotoMetrics] = useState([])
 
   useEffect(() => {
@@ -100,6 +100,19 @@ export default function Result() {
             <div>
               <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Descripción</p>
               <p className="text-slate-200 whitespace-pre-wrap">{description}</p>
+            </div>
+          )}
+          {barcode && (
+            <div>
+              <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Código de barras</p>
+              <p className="font-mono text-slate-200">{barcode.value}</p>
+              <p className="text-xs text-slate-500 mt-0.5">{barcode.format}</p>
+            </div>
+          )}
+          {qrCode && (
+            <div>
+              <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Código QR</p>
+              <p className="font-mono text-slate-200 break-all">{qrCode.value}</p>
             </div>
           )}
           <div>
