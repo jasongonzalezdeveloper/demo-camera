@@ -2,6 +2,14 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useProduct } from '../context/ProductContext'
 
+function blobToBase64(blob) {
+  return new Promise((resolve) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.readAsDataURL(blob)
+  })
+}
+
 export default function Camera() {
   const navigate = useNavigate()
   const { addPhotos } = useProduct()
@@ -14,6 +22,8 @@ export default function Camera() {
   const [isDesktop, setIsDesktop] = useState(false)
   const [error, setError] = useState(null)
   const [cameraReady, setCameraReady] = useState(false)
+  const [capturing, setCapturing] = useState(false)
+  const [captureMode, setCaptureMode] = useState(null) // 'imagecapture' | 'canvas'
 
   const stopStream = useCallback(() => {
     if (streamRef.current) {
@@ -23,7 +33,6 @@ export default function Camera() {
   }, [])
 
   const startCamera = useCallback(async () => {
-    // Detect desktop: no touch points
     const desktop = navigator.maxTouchPoints === 0
     setIsDesktop(desktop)
 
@@ -33,8 +42,8 @@ export default function Camera() {
       stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { exact: 'environment' },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
+          width: { ideal: 4096 },
+          height: { ideal: 2160 },
         },
       })
     } catch {
@@ -49,6 +58,15 @@ export default function Camera() {
     }
 
     streamRef.current = stream
+
+    // Detect ImageCapture support once stream is ready
+    const track = stream.getVideoTracks()[0]
+    if (window.ImageCapture && track) {
+      setCaptureMode('imagecapture')
+    } else {
+      setCaptureMode('canvas')
+    }
+
     if (videoRef.current) {
       videoRef.current.srcObject = stream
       videoRef.current.onloadedmetadata = () => setCameraReady(true)
@@ -60,17 +78,52 @@ export default function Camera() {
     return () => stopStream()
   }, [startCamera, stopStream])
 
-  function takePhoto() {
-    const video = videoRef.current
-    const canvas = canvasRef.current
-    if (!video || !canvas || !cameraReady) return
+  async function takePhoto() {
+    if (!cameraReady || capturing) return
+    setCapturing(true)
 
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
-    const ctx = canvas.getContext('2d')
-    ctx.drawImage(video, 0, 0)
-    const b64 = canvas.toDataURL('image/jpeg', 0.85)
-    setLocalPhotos(prev => [...prev, b64])
+    try {
+      // Strategy 1: ImageCapture API — captures at sensor resolution
+      if (captureMode === 'imagecapture' && streamRef.current) {
+        const track = streamRef.current.getVideoTracks()[0]
+        const imageCapture = new window.ImageCapture(track)
+
+        try {
+          const capabilities = await imageCapture.getPhotoCapabilities()
+          const settings = {}
+          if (capabilities.imageWidth?.max) settings.imageWidth = capabilities.imageWidth.max
+          if (capabilities.imageHeight?.max) settings.imageHeight = capabilities.imageHeight.max
+
+          const blob = await imageCapture.takePhoto(settings)
+          const b64 = await blobToBase64(blob)
+          setLocalPhotos(prev => [...prev, b64])
+          return
+        } catch {
+          // ImageCapture failed — fall through to canvas
+          setCaptureMode('canvas')
+        }
+      }
+
+      // Strategy 2: Canvas fallback — WebP 0.95, then JPEG 0.95
+      const video = videoRef.current
+      const canvas = canvasRef.current
+      if (!video || !canvas) return
+
+      canvas.width = video.videoWidth
+      canvas.height = video.videoHeight
+      const ctx = canvas.getContext('2d')
+      ctx.drawImage(video, 0, 0)
+
+      const webp = canvas.toDataURL('image/webp', 0.95)
+      // Some browsers return 'image/png' when WebP is unsupported
+      const b64 = webp.startsWith('data:image/webp')
+        ? webp
+        : canvas.toDataURL('image/jpeg', 0.95)
+
+      setLocalPhotos(prev => [...prev, b64])
+    } finally {
+      setCapturing(false)
+    }
   }
 
   function handleDone() {
@@ -105,6 +158,15 @@ export default function Camera() {
         </div>
       )}
 
+      {/* Capture mode badge */}
+      {captureMode && (
+        <div className={`text-xs px-4 py-1.5 text-center ${captureMode === 'imagecapture' ? 'bg-green-900/40 text-green-400' : 'bg-slate-800 text-slate-400'}`}>
+          {captureMode === 'imagecapture'
+            ? 'Alta calidad — ImageCapture API (resolución nativa del sensor)'
+            : 'Calidad alta — WebP 95% (resolución del stream)'}
+        </div>
+      )}
+
       {/* Error state */}
       {error ? (
         <div className="flex-1 flex flex-col items-center justify-center px-6 text-center gap-4">
@@ -134,13 +196,18 @@ export default function Camera() {
                 <div className="text-slate-400 animate-pulse">Iniciando cámara...</div>
               </div>
             )}
+            {capturing && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+                <div className="text-white animate-pulse text-sm">Capturando...</div>
+              </div>
+            )}
           </div>
 
           {/* Capture button */}
           <div className="py-4 flex justify-center">
             <button
               onClick={takePhoto}
-              disabled={!cameraReady}
+              disabled={!cameraReady || capturing}
               className="bg-white hover:bg-slate-100 disabled:bg-slate-600 disabled:cursor-not-allowed text-black font-bold w-16 h-16 rounded-full shadow-lg flex items-center justify-center text-2xl active:scale-90 transition-all"
               aria-label="Tomar foto"
             >
@@ -193,7 +260,7 @@ export default function Camera() {
         </>
       )}
 
-      {/* Hidden canvas for capture */}
+      {/* Hidden canvas for fallback capture */}
       <canvas ref={canvasRef} className="hidden" />
     </div>
   )

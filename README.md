@@ -37,9 +37,8 @@ Luego abrir la URL de red local que muestra Vite (`https://192.168.x.x:5173/demo
 
 ## Demo en GitHub Pages
 
-> [https://TU_USUARIO.github.io/demo-camera/](https://TU_USUARIO.github.io/demo-camera/)
+> [https://jasongonzalezdeveloper.github.io/demo-camera/](https://jasongonzalezdeveloper.github.io/demo-camera/)
 
-Reemplaza `TU_USUARIO` con tu nombre de usuario de GitHub.
 
 ## Deploy
 
