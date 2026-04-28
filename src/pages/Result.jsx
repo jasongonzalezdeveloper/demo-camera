@@ -127,8 +127,11 @@ export default function Result() {
                     </div>
                     {m ? (
                       <div className="px-0.5 space-y-0.5">
+                        <p className="text-xs font-medium text-slate-200">
+                          Foto {i + 1}: {m.width}×{m.height}
+                        </p>
                         <p className="text-xs text-slate-400">
-                          {m.width}×{m.height} · {m.megapixels} MP · {m.fileSizeKB} KB
+                          {m.megapixels} MP · {m.fileSizeKB} KB
                         </p>
                         <p className="text-xs">
                           <span className="text-slate-400">Nitidez: </span>
