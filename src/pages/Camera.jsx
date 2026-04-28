@@ -1,8 +1,7 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useProduct } from '../context/ProductContext'
-import { BrowserMultiFormatReader } from '@zxing/browser'
-import { BarcodeFormat } from '@zxing/library'
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode'
 
 function blobToBase64(blob) {
   return new Promise((resolve) => {
@@ -12,17 +11,33 @@ function blobToBase64(blob) {
   })
 }
 
-const FORMAT_NAMES = {
-  [BarcodeFormat.QR_CODE]: 'QR Code',
-  [BarcodeFormat.EAN_13]: 'EAN-13',
-  [BarcodeFormat.EAN_8]: 'EAN-8',
-  [BarcodeFormat.UPC_A]: 'UPC-A',
-  [BarcodeFormat.UPC_E]: 'UPC-E',
-  [BarcodeFormat.CODE_128]: 'Code 128',
-  [BarcodeFormat.CODE_39]: 'Code 39',
-  [BarcodeFormat.DATA_MATRIX]: 'Data Matrix',
-  [BarcodeFormat.ITF]: 'ITF',
-  [BarcodeFormat.CODABAR]: 'Codabar',
+const BARCODE_FORMATS = [
+  Html5QrcodeSupportedFormats.EAN_13,
+  Html5QrcodeSupportedFormats.EAN_8,
+  Html5QrcodeSupportedFormats.UPC_A,
+  Html5QrcodeSupportedFormats.UPC_E,
+  Html5QrcodeSupportedFormats.CODE_128,
+  Html5QrcodeSupportedFormats.CODE_39,
+  Html5QrcodeSupportedFormats.CODE_93,
+  Html5QrcodeSupportedFormats.ITF,
+  Html5QrcodeSupportedFormats.CODABAR,
+  Html5QrcodeSupportedFormats.DATA_MATRIX,
+]
+
+const QR_FORMATS = [Html5QrcodeSupportedFormats.QR_CODE]
+
+const FORMAT_LABELS = {
+  QR_CODE: 'QR Code',
+  EAN_13: 'EAN-13',
+  EAN_8: 'EAN-8',
+  UPC_A: 'UPC-A',
+  UPC_E: 'UPC-E',
+  CODE_128: 'Code 128',
+  CODE_39: 'Code 39',
+  CODE_93: 'Code 93',
+  DATA_MATRIX: 'Data Matrix',
+  ITF: 'ITF',
+  CODABAR: 'Codabar',
 }
 
 export default function Camera() {
@@ -32,7 +47,7 @@ export default function Camera() {
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const streamRef = useRef(null)
-  const scanControlsRef = useRef(null)
+  const html5QrRef = useRef(null)
 
   const [localPhotos, setLocalPhotos] = useState([])
   const [isDesktop, setIsDesktop] = useState(false)
@@ -44,29 +59,24 @@ export default function Camera() {
   const [mode, setMode] = useState('photo') // 'photo' | 'barcode' | 'qr'
   const [scanning, setScanning] = useState(false)
   const [detected, setDetected] = useState(null) // { value, formatName }
-  const [scanKey, setScanKey] = useState(0)
 
-  const stopStream = useCallback(() => {
+  // ── Photo stream ──────────────────────────────────────────────────────────
+
+  function stopPhotoStream() {
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop())
+      streamRef.current.getTracks().forEach(t => t.stop())
       streamRef.current = null
     }
-  }, [])
-
-  function stopScan() {
-    if (scanControlsRef.current) {
-      scanControlsRef.current.stop()
-      scanControlsRef.current = null
-    }
-    setScanning(false)
+    setCameraReady(false)
   }
 
-  const startCamera = useCallback(async () => {
+  async function startPhotoCamera() {
     const desktop = navigator.maxTouchPoints === 0
     setIsDesktop(desktop)
+    setError(null)
+    setCameraReady(false)
 
     let stream = null
-
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -77,9 +87,7 @@ export default function Camera() {
       })
     } catch {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment' },
-        })
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
       } catch (err) {
         setError('No se pudo acceder a la cámara: ' + (err.message || 'permiso denegado'))
         return
@@ -87,7 +95,6 @@ export default function Camera() {
     }
 
     streamRef.current = stream
-
     const track = stream.getVideoTracks()[0]
     setCaptureMode(window.ImageCapture && track ? 'imagecapture' : 'canvas')
 
@@ -95,60 +102,74 @@ export default function Camera() {
       videoRef.current.srcObject = stream
       videoRef.current.onloadedmetadata = () => setCameraReady(true)
     }
-  }, [])
+  }
 
-  useEffect(() => {
-    startCamera()
-    return () => stopStream()
-  }, [startCamera, stopStream])
+  // ── Scanner ───────────────────────────────────────────────────────────────
 
-  // Scan loop — restarts when mode or scanKey changes
-  useEffect(() => {
-    if (!cameraReady || mode === 'photo') return
+  function stopScanner() {
+    if (html5QrRef.current) {
+      html5QrRef.current.stop().catch(() => {})
+      html5QrRef.current.clear()
+      html5QrRef.current = null
+    }
+    setScanning(false)
+  }
 
+  async function startScanner(currentMode) {
+    setError(null)
     setDetected(null)
     setScanning(true)
 
-    const currentMode = mode
-    let stopped = false
-    const reader = new BrowserMultiFormatReader()
-
-    reader
-      .decodeFromVideoElement(videoRef.current, (result, _err, controls) => {
-        if (stopped || !result) return
-
-        const fmt = result.getBarcodeFormat()
-        const isQR = fmt === BarcodeFormat.QR_CODE
-
-        if (currentMode === 'qr' && !isQR) return
-        if (currentMode === 'barcode' && isQR) return
-
-        stopped = true
-        controls.stop()
-        scanControlsRef.current = null
-        setScanning(false)
-
-        if (navigator.vibrate) navigator.vibrate([100, 50, 100])
-        setDetected({
-          value: result.getText(),
-          formatName: FORMAT_NAMES[fmt] ?? 'Código',
-        })
+    const formats = currentMode === 'qr' ? QR_FORMATS : BARCODE_FORMATS
+    let scanner
+    try {
+      scanner = new Html5Qrcode('html5qr-scanner', {
+        formatsToSupport: formats,
+        verbose: false,
       })
-      .then(controls => {
-        if (stopped) controls.stop()
-        else scanControlsRef.current = controls
-      })
-      .catch(() => setScanning(false))
 
-    return () => {
-      stopped = true
-      if (scanControlsRef.current) {
-        scanControlsRef.current.stop()
-        scanControlsRef.current = null
-      }
+      await scanner.start(
+        { facingMode: 'environment' },
+        {
+          fps: 15,
+          qrbox: currentMode === 'qr'
+            ? { width: 220, height: 220 }
+            : { width: 280, height: 110 },
+          aspectRatio: 1.7778,
+        },
+        (text, result) => {
+          const rawName = result?.result?.format?.formatName ?? ''
+          const formatName = FORMAT_LABELS[rawName] ?? (currentMode === 'qr' ? 'QR Code' : 'Código')
+          if (navigator.vibrate) navigator.vibrate([100, 50, 100])
+          setDetected({ value: text, formatName })
+          setScanning(false)
+          scanner.stop().catch(() => {})
+          html5QrRef.current = null
+        },
+        () => {}, // per-frame errors son normales cuando no hay código en cuadro
+      )
+
+      html5QrRef.current = scanner
+    } catch (err) {
       setScanning(false)
+      setError('No se pudo iniciar el escáner: ' + (err?.message ?? String(err)))
     }
-  }, [mode, cameraReady, scanKey])
+  }
+
+  // ── Lifecycle: switch camera based on mode ────────────────────────────────
+
+  useEffect(() => {
+    if (mode === 'photo') {
+      startPhotoCamera()
+      return () => stopPhotoStream()
+    } else {
+      stopPhotoStream()
+      startScanner(mode)
+      return () => stopScanner()
+    }
+  }, [mode]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Photo capture ─────────────────────────────────────────────────────────
 
   async function takePhoto() {
     if (!cameraReady || capturing) return
@@ -192,6 +213,8 @@ export default function Camera() {
     }
   }
 
+  // ── Handlers ──────────────────────────────────────────────────────────────
+
   function handleModeChange(newMode) {
     setDetected(null)
     setMode(newMode)
@@ -199,14 +222,13 @@ export default function Camera() {
 
   function handleDone() {
     if (localPhotos.length > 0) addPhotos(localPhotos)
-    stopScan()
-    stopStream()
+    stopPhotoStream()
     navigate('/form')
   }
 
   function handleCancel() {
-    stopScan()
-    stopStream()
+    stopScanner()
+    stopPhotoStream()
     navigate('/form')
   }
 
@@ -214,19 +236,27 @@ export default function Camera() {
     if (!detected) return
     if (mode === 'barcode') setBarcode({ value: detected.value, format: detected.formatName })
     if (mode === 'qr') setQrCode({ value: detected.value })
-    stopScan()
-    stopStream()
+    stopScanner()
     navigate('/form')
   }
 
   function handleRescan() {
     setDetected(null)
-    setScanKey(k => k + 1)
+    setScanning(true)
+    // Restart scanner by stopping current instance and creating a new one
+    if (html5QrRef.current) {
+      html5QrRef.current.stop().catch(() => {})
+      html5QrRef.current.clear()
+      html5QrRef.current = null
+    }
+    startScanner(mode)
   }
 
   function removeLocalPhoto(index) {
     setLocalPhotos(prev => prev.filter((_, i) => i !== index))
   }
+
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="min-h-screen bg-black text-white flex flex-col">
@@ -268,7 +298,7 @@ export default function Camera() {
         </div>
       )}
 
-      {/* Capture quality badge (photo mode only) */}
+      {/* Quality badge (photo mode) */}
       {mode === 'photo' && captureMode && (
         <div className={`text-xs px-4 py-1.5 text-center ${captureMode === 'imagecapture' ? 'bg-green-900/40 text-green-400' : 'bg-slate-800 text-slate-400'}`}>
           {captureMode === 'imagecapture'
@@ -277,22 +307,16 @@ export default function Camera() {
         </div>
       )}
 
-      {/* Error state */}
-      {error ? (
-        <div className="flex-1 flex flex-col items-center justify-center px-6 text-center gap-4">
-          <div className="text-5xl">📵</div>
-          <p className="text-red-400 font-medium">{error}</p>
-          <p className="text-slate-400 text-sm">Asegúrate de conceder permisos de cámara y que el sitio use HTTPS.</p>
-          <button
-            onClick={handleCancel}
-            className="mt-4 bg-slate-700 hover:bg-slate-600 text-white px-6 py-3 rounded-xl transition-colors"
-          >
-            Volver al formulario
-          </button>
+      {/* Error */}
+      {error && (
+        <div className="mx-4 mt-3 bg-red-900/40 border border-red-500/40 rounded-xl px-4 py-3 text-sm text-red-400">
+          {error}
         </div>
-      ) : (
+      )}
+
+      {/* ── Photo mode ── */}
+      {mode === 'photo' && (
         <>
-          {/* Video stream */}
           <div className="relative bg-black">
             <video
               ref={videoRef}
@@ -306,59 +330,25 @@ export default function Camera() {
                 <div className="text-slate-400 animate-pulse">Iniciando cámara...</div>
               </div>
             )}
-            {mode === 'photo' && capturing && (
+            {capturing && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/50">
                 <div className="text-white animate-pulse text-sm">Capturando...</div>
               </div>
             )}
-            {/* Scan targeting overlay */}
-            {mode !== 'photo' && (
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <div
-                  className={`border-2 rounded-lg transition-colors duration-300 ${
-                    detected ? 'border-green-400' : 'border-white/60'
-                  } ${mode === 'qr' ? 'w-52 h-52' : 'w-72 h-28'}`}
-                />
-              </div>
-            )}
           </div>
 
-          {/* Scan status / detected result */}
-          {mode !== 'photo' && (
-            <div className="px-4 pt-3">
-              {!detected ? (
-                <p className="text-center text-sm text-slate-400 animate-pulse">
-                  {scanning
-                    ? `Apunta al ${mode === 'qr' ? 'código QR' : 'código de barras'}...`
-                    : 'Iniciando escáner...'}
-                </p>
-              ) : (
-                <div className="bg-green-900/40 border border-green-500/40 rounded-xl p-3">
-                  <p className="text-xs text-green-400 uppercase tracking-wider mb-1">
-                    {detected.formatName} detectado
-                  </p>
-                  <p className="text-sm font-mono text-white break-all">{detected.value}</p>
-                </div>
-              )}
-            </div>
-          )}
+          <div className="py-4 flex justify-center">
+            <button
+              onClick={takePhoto}
+              disabled={!cameraReady || capturing}
+              className="bg-white hover:bg-slate-100 disabled:bg-slate-600 disabled:cursor-not-allowed text-black font-bold w-16 h-16 rounded-full shadow-lg flex items-center justify-center text-2xl active:scale-90 transition-all"
+              aria-label="Tomar foto"
+            >
+              📷
+            </button>
+          </div>
 
-          {/* Photo capture button */}
-          {mode === 'photo' && (
-            <div className="py-4 flex justify-center">
-              <button
-                onClick={takePhoto}
-                disabled={!cameraReady || capturing}
-                className="bg-white hover:bg-slate-100 disabled:bg-slate-600 disabled:cursor-not-allowed text-black font-bold w-16 h-16 rounded-full shadow-lg flex items-center justify-center text-2xl active:scale-90 transition-all"
-                aria-label="Tomar foto"
-              >
-                📷
-              </button>
-            </div>
-          )}
-
-          {/* Local photo gallery */}
-          {mode === 'photo' && localPhotos.length > 0 && (
+          {localPhotos.length > 0 && (
             <div className="px-4 pb-4">
               <p className="text-xs text-slate-400 mb-2 uppercase tracking-wider">
                 Fotos tomadas ({localPhotos.length})
@@ -366,11 +356,7 @@ export default function Camera() {
               <div className="grid grid-cols-4 gap-2">
                 {localPhotos.map((photo, i) => (
                   <div key={i} className="relative aspect-square rounded-lg overflow-hidden bg-slate-800">
-                    <img
-                      src={photo}
-                      alt={`Captura ${i + 1}`}
-                      className="w-full h-full object-cover"
-                    />
+                    <img src={photo} alt={`Captura ${i + 1}`} className="w-full h-full object-cover" />
                     <button
                       onClick={() => removeLocalPhoto(i)}
                       className="absolute top-0.5 right-0.5 bg-red-600 hover:bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold leading-none"
@@ -384,50 +370,57 @@ export default function Camera() {
             </div>
           )}
 
-          {/* Bottom actions */}
           <div className="mt-auto px-4 pb-6 grid grid-cols-2 gap-3">
-            {mode === 'photo' ? (
+            <button onClick={handleCancel} className="bg-slate-700 hover:bg-slate-600 active:scale-95 text-white font-medium py-3 rounded-xl transition-all">
+              Cancelar
+            </button>
+            <button onClick={handleDone} className="bg-indigo-500 hover:bg-indigo-400 active:scale-95 text-white font-semibold py-3 rounded-xl transition-all">
+              Listo {localPhotos.length > 0 && `(${localPhotos.length})`}
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* ── Scan mode ── */}
+      {mode !== 'photo' && (
+        <>
+          {/* html5-qrcode mounts its video inside this div */}
+          <div id="html5qr-scanner" className="w-full" />
+
+          {/* Status / result */}
+          <div className="px-4 pt-3">
+            {!detected ? (
+              <p className="text-center text-sm text-slate-400 animate-pulse">
+                {scanning
+                  ? `Apunta al ${mode === 'qr' ? 'código QR' : 'código de barras'}...`
+                  : 'Iniciando escáner...'}
+              </p>
+            ) : (
+              <div className="bg-green-900/40 border border-green-500/40 rounded-xl p-3">
+                <p className="text-xs text-green-400 uppercase tracking-wider mb-1">
+                  {detected.formatName} detectado
+                </p>
+                <p className="text-sm font-mono text-white break-all">{detected.value}</p>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-auto px-4 pb-6 grid grid-cols-2 gap-3">
+            {detected ? (
               <>
-                <button
-                  onClick={handleCancel}
-                  className="bg-slate-700 hover:bg-slate-600 active:scale-95 text-white font-medium py-3 rounded-xl transition-all"
-                >
-                  Cancelar
-                </button>
-                <button
-                  onClick={handleDone}
-                  className="bg-indigo-500 hover:bg-indigo-400 active:scale-95 text-white font-semibold py-3 rounded-xl transition-all"
-                >
-                  Listo {localPhotos.length > 0 && `(${localPhotos.length})`}
-                </button>
-              </>
-            ) : detected ? (
-              <>
-                <button
-                  onClick={handleRescan}
-                  className="bg-slate-700 hover:bg-slate-600 active:scale-95 text-white font-medium py-3 rounded-xl transition-all"
-                >
+                <button onClick={handleRescan} className="bg-slate-700 hover:bg-slate-600 active:scale-95 text-white font-medium py-3 rounded-xl transition-all">
                   Escanear de nuevo
                 </button>
-                <button
-                  onClick={handleAcceptScan}
-                  className="bg-green-600 hover:bg-green-500 active:scale-95 text-white font-semibold py-3 rounded-xl transition-all"
-                >
+                <button onClick={handleAcceptScan} className="bg-green-600 hover:bg-green-500 active:scale-95 text-white font-semibold py-3 rounded-xl transition-all">
                   Aceptar
                 </button>
               </>
             ) : (
               <>
-                <button
-                  onClick={handleCancel}
-                  className="bg-slate-700 hover:bg-slate-600 active:scale-95 text-white font-medium py-3 rounded-xl transition-all"
-                >
+                <button onClick={handleCancel} className="bg-slate-700 hover:bg-slate-600 active:scale-95 text-white font-medium py-3 rounded-xl transition-all">
                   Cancelar
                 </button>
-                <button
-                  disabled
-                  className="bg-slate-800 text-slate-500 font-medium py-3 rounded-xl cursor-not-allowed"
-                >
+                <button disabled className="bg-slate-800 text-slate-500 font-medium py-3 rounded-xl cursor-not-allowed">
                   Buscando...
                 </button>
               </>
@@ -436,7 +429,6 @@ export default function Camera() {
         </>
       )}
 
-      {/* Hidden canvas for photo capture */}
       <canvas ref={canvasRef} className="hidden" />
     </div>
   )
